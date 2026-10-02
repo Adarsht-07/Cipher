@@ -1,842 +1,1284 @@
-import { useState } from "react";
+import React, {
+  useEffect,
+  useState,
+} from "react";
+
 import axios from "axios";
 
+import * as THREE from "three";
+
 import {
-  AlertCircle,
-  CheckCircle2,
-  ChevronRight,
-  Loader2,
-  RotateCcw,
-  Ruler,
-  TriangleAlert,
-} from "lucide-react";
+  Canvas,
+} from "@react-three/fiber";
+
+import {
+  OrbitControls,
+  Grid,
+  Bounds,
+} from "@react-three/drei";
+
+import {
+  STLLoader,
+} from "three/addons/loaders/STLLoader.js";
 
 import Navbar from "../Components/Navbar";
 
 
-type ColumnForm = {
+/* ============================================================
+   BACKEND
+   ============================================================ */
+
+const BACKEND_URL =
+  "http://127.0.0.1:8080";
+
+
+const DESIGN_URL =
+  `${BACKEND_URL}/design/column`;
+
+
+const STL_URL =
+  `${BACKEND_URL}/design/column/stl`;
+
+
+/* ============================================================
+   TYPES
+   ============================================================ */
+
+interface DesignForm {
   Length: number;
   Fac_Axial_Load: number;
   Boundary_Condition: number;
   Sections: string;
-};
+}
 
 
-const Column = () => {
+interface DesignResult {
+  [key: string]: any;
+}
 
-  const [form, setForm] = useState<ColumnForm>({
-    Length: 3.0,
-    Fac_Axial_Load: 500.0,
+
+/* ============================================================
+   3D MODEL
+   ============================================================ */
+
+interface ColumnModelProps {
+  geometry: THREE.BufferGeometry;
+}
+
+
+function ColumnModel({
+  geometry,
+}: ColumnModelProps) {
+
+  return (
+    <mesh
+      geometry={geometry}
+      castShadow
+      receiveShadow
+    >
+
+      <meshStandardMaterial
+        side={THREE.DoubleSide}
+        metalness={0.15}
+        roughness={0.6}
+      />
+
+    </mesh>
+  );
+
+}
+
+
+/* ============================================================
+   STL VIEWER
+   ============================================================ */
+
+interface ColumnViewerProps {
+  geometry: THREE.BufferGeometry | null;
+  loading: boolean;
+}
+
+
+function ColumnViewer({
+  geometry,
+  loading,
+}: ColumnViewerProps) {
+
+  return (
+    <div
+      style={{
+        width: "100%",
+        height: "100%",
+        minHeight: "600px",
+      }}
+    >
+
+      <Canvas
+        shadows
+        camera={{
+          position: [4, 3, 5],
+          fov: 45,
+        }}
+      >
+
+        <color
+          attach="background"
+          args={["#f6f8fa"]}
+        />
+
+
+        {/* --------------------------------------------------
+            Lighting
+            -------------------------------------------------- */}
+
+        <ambientLight
+          intensity={1.5}
+        />
+
+        <directionalLight
+          position={[5, 8, 5]}
+          intensity={2.5}
+          castShadow
+        />
+
+        <directionalLight
+          position={[-5, 3, -5]}
+          intensity={1}
+        />
+
+
+        {/* --------------------------------------------------
+            Model
+            -------------------------------------------------- */}
+
+        {geometry && (
+
+          <Bounds
+            fit
+            clip
+            observe
+            margin={1.2}
+          >
+
+            <ColumnModel
+              geometry={geometry}
+            />
+
+          </Bounds>
+
+        )}
+
+
+        {/* --------------------------------------------------
+            Ground grid
+            -------------------------------------------------- */}
+
+        <Grid
+          args={[
+            10,
+            20,
+          ]}
+          cellSize={0.5}
+          cellThickness={0.5}
+          sectionSize={2}
+          sectionThickness={1}
+          fadeDistance={20}
+          fadeStrength={1}
+          infiniteGrid
+        />
+
+
+        {/* --------------------------------------------------
+            Camera controls
+            -------------------------------------------------- */}
+
+        <OrbitControls
+          makeDefault
+          enableDamping
+          dampingFactor={0.08}
+        />
+
+      </Canvas>
+
+
+      {/* ----------------------------------------------------
+          Loading
+          ---------------------------------------------------- */}
+
+      {loading && (
+
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            pointerEvents: "none",
+          }}
+        >
+
+          <div>
+            Loading 3D model...
+          </div>
+
+        </div>
+
+      )}
+
+    </div>
+  );
+
+}
+
+
+/* ============================================================
+   HELPER
+   ============================================================ */
+
+function formatKey(
+  key: string
+) {
+
+  return key
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, c =>
+      c.toUpperCase()
+    );
+
+}
+
+
+function formatValue(
+  value: any
+) {
+
+  if (
+    typeof value === "number"
+  ) {
+
+    return Number.isInteger(value)
+      ? value
+      : value.toFixed(3);
+
+  }
+
+  if (
+    typeof value === "boolean"
+  ) {
+
+    return value
+      ? "Yes"
+      : "No";
+
+  }
+
+  return String(value);
+
+}
+
+
+/* ============================================================
+   COLUMN PAGE
+   ============================================================ */
+
+export default function Column() {
+
+  /* ----------------------------------------------------------
+     Form
+     ---------------------------------------------------------- */
+
+  const [
+    form,
+    setForm,
+  ] = useState<DesignForm>({
+    Length: 3,
+    Fac_Axial_Load: 500,
     Boundary_Condition: 0,
     Sections: "I",
   });
 
-  const [loading, setLoading] = useState(false);
 
-  const [result, setResult] = useState<any>(null);
+  /* ----------------------------------------------------------
+     Design result
+     ---------------------------------------------------------- */
 
-  const [error, setError] = useState<string | null>(null);
+  const [
+    result,
+    setResult,
+  ] = useState<DesignResult | null>(
+    null
+  );
 
 
-  const updateField = <K extends keyof ColumnForm>(
-    field: K,
-    value: ColumnForm[K]
+  /* ----------------------------------------------------------
+     3D geometry
+     ---------------------------------------------------------- */
+
+  const [
+    geometry,
+    setGeometry,
+  ] = useState<THREE.BufferGeometry | null>(
+    null
+  );
+
+
+  /* ----------------------------------------------------------
+     Loading
+     ---------------------------------------------------------- */
+
+  const [
+    loading,
+    setLoading,
+  ] = useState(false);
+
+
+  const [
+    meshLoading,
+    setMeshLoading,
+  ] = useState(false);
+
+
+  /* ----------------------------------------------------------
+     Error
+     ---------------------------------------------------------- */
+
+  const [
+    error,
+    setError,
+  ] = useState<string | null>(
+    null
+  );
+
+
+  /* ----------------------------------------------------------
+     Active tab
+     ---------------------------------------------------------- */
+
+  const [
+    activeTab,
+    setActiveTab,
+  ] = useState<
+    "model" | "report"
+  >("model");
+
+
+  /* ==========================================================
+     FORM HANDLER
+     ========================================================== */
+
+  const handleChange = (
+    event:
+      React.ChangeEvent<
+        HTMLInputElement |
+        HTMLSelectElement
+      >
   ) => {
 
-    setForm((prev) => ({
-      ...prev,
-      [field]: value,
-    }));
+    const {
+      name,
+      value,
+    } = event.target;
 
-    // Remove previous result when inputs change
-    setResult(null);
-    setError(null);
+
+    setForm(
+      previous => ({
+        ...previous,
+
+        [name]:
+          name === "Sections"
+            ? value
+            : Number(value),
+      })
+    );
+
   };
 
 
-  const resetForm = () => {
+  /* ==========================================================
+     LOAD STL
+     ========================================================== */
 
-    setForm({
-      Length: 3.0,
-      Fac_Axial_Load: 500.0,
-      Boundary_Condition: 0,
-      Sections: "I",
-    });
+  const loadSTL = async () => {
 
-    setResult(null);
-    setError(null);
-  };
-
-
-  const designColumn = async () => {
-
-    setLoading(true);
-    setResult(null);
-    setError(null);
+    setMeshLoading(true);
 
     try {
 
-      const response = await axios.post(
-        "http://127.0.0.1:8080/design/column",
-        form,
-        {
-          headers: {
-            "Content-Type": "application/json",
-          },
-        }
-      );
+      const loader =
+        new STLLoader();
 
-      setResult(response.data);
-
-    } catch (err: any) {
 
       /*
-       * Axios error handling
+       * Cache busting is useful because every design
+       * generates a new Column.stl with the same filename.
        */
 
-      if (axios.isAxiosError(err)) {
+      const url =
+        `${STL_URL}?t=${Date.now()}`;
 
-        if (err.response) {
 
-          const backendError =
-            err.response.data?.detail ||
-            err.response.data?.message ||
-            err.response.data?.error ||
-            "The column design could not be completed.";
+      const loadedGeometry =
+        await loader.loadAsync(
+          url
+        );
 
-          setError(backendError);
 
-        } else if (err.request) {
+      loadedGeometry.computeVertexNormals();
 
-          setError(
-            "Unable to connect to the design engine. " +
-            "Please make sure the backend is running on 127.0.0.1:8080."
-          );
+      /*
+       * STL has no engineering units metadata.
+       * Gmsh is writing the model in metres, so no
+       * unit conversion is required here.
+       */
 
-        } else {
+      loadedGeometry.center();
 
-          setError(err.message);
-        }
+
+      setGeometry(
+        loadedGeometry
+      );
+
+    } catch (e) {
+
+      console.error(
+        "Failed to load Column.stl:",
+        e
+      );
+
+
+      setError(
+        "Column design succeeded, but the 3D model could not be loaded."
+      );
+
+    } finally {
+
+      setMeshLoading(false);
+
+    }
+
+  };
+
+
+  /* ==========================================================
+     DESIGN COLUMN
+     ========================================================== */
+
+  const handleDesign = async () => {
+
+    setLoading(true);
+
+    setError(null);
+
+    setGeometry(null);
+
+
+    try {
+
+      const response =
+        await axios.post<DesignResult>(
+          DESIGN_URL,
+          form,
+          {
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+
+            timeout: 120000,
+          }
+        );
+
+
+      const designResult =
+        response.data;
+
+
+      setResult(
+        designResult
+      );
+
+
+      /*
+       * Generate/load the new STL after
+       * Julia has completed the design.
+       */
+
+      await loadSTL();
+
+      setActiveTab(
+        "model"
+      );
+
+    } catch (e: any) {
+
+      console.error(
+        "Column design error:",
+        e
+      );
+
+
+      if (
+        e.response?.data?.message
+      ) {
+
+        setError(
+          e.response.data.message
+        );
+
+      } else if (
+        e.response?.data?.error
+      ) {
+
+        setError(
+          e.response.data.error
+        );
+
+      } else if (
+        e.code === "ECONNABORTED"
+      ) {
+
+        setError(
+          "The backend took too long to respond."
+        );
 
       } else {
 
         setError(
-          "An unexpected error occurred while designing the column."
+          "Unable to connect to the backend. Make sure Julia is running on 127.0.0.1:8080."
         );
+
       }
 
     } finally {
 
       setLoading(false);
+
     }
+
   };
 
 
+  /* ==========================================================
+     RESET
+     ========================================================== */
+
+  const handleReset = () => {
+
+    setForm({
+      Length: 3,
+      Fac_Axial_Load: 500,
+      Boundary_Condition: 0,
+      Sections: "I",
+    });
+
+    setResult(null);
+
+    setGeometry(null);
+
+    setError(null);
+
+  };
+
+
+  /* ==========================================================
+     RETURN
+     ========================================================== */
+
   return (
-    <div className="min-h-screen bg-[#eef1f4] text-slate-800">
+
+    <div
+      style={{
+        minHeight: "100vh",
+        background: "#eef1f5",
+      }}
+    >
 
       <Navbar />
 
 
-      {/* ================= HEADER ================= */}
+      {/* ====================================================
+          HEADER
+          ==================================================== */}
 
-      <div className="bg-[#172331] text-white border-b border-slate-700">
+      <div
+        style={{
+          background: "#162434",
+          color: "white",
+          padding: "28px 5%",
+        }}
+      >
 
-        <div className="max-w-[1400px] mx-auto px-8 py-6">
-
-          <div className="flex items-center gap-2 text-xs text-slate-400">
-
-            <span>Design</span>
-
-            <ChevronRight size={13} />
-
-            <span className="text-white">
-              Column
-            </span>
-
-          </div>
-
-
-          <h1 className="mt-4 text-2xl font-semibold">
-            Column Design
-          </h1>
-
-          <p className="mt-1 text-sm text-slate-400">
-            Design and verify structural columns
-          </p>
-
+        <div
+          style={{
+            color: "#9dafc4",
+            marginBottom: "18px",
+          }}
+        >
+          Design
+          <span
+            style={{
+              margin: "0 12px",
+            }}
+          >
+            ›
+          </span>
+          <span
+            style={{
+              color: "white",
+            }}
+          >
+            Column
+          </span>
         </div>
+
+
+        <h1
+          style={{
+            margin: 0,
+            fontSize: "30px",
+          }}
+        >
+          Column Design
+        </h1>
+
+
+        <p
+          style={{
+            marginTop: "6px",
+            color: "#9dafc4",
+            fontSize: "16px",
+          }}
+        >
+          Design, verify and visualize structural columns
+        </p>
 
       </div>
 
 
-      {/* ================= MAIN ================= */}
+      {/* ====================================================
+          MAIN
+          ==================================================== */}
 
-      <main className="max-w-[1400px] mx-auto px-8 py-8">
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns:
+            "410px minmax(0, 1fr)",
+          gap: "28px",
+          padding: "36px 5%",
+        }}
+      >
 
-        <div className="grid lg:grid-cols-[360px_1fr] gap-6">
+        {/* ==================================================
+            LEFT PANEL
+            ================================================== */}
+
+        <div
+          style={{
+            background: "white",
+            border:
+              "1px solid #dce3eb",
+            borderRadius: "10px",
+            overflow: "hidden",
+            height: "fit-content",
+          }}
+        >
+
+          <div
+            style={{
+              padding: "24px",
+              borderBottom:
+                "1px solid #e2e7ed",
+            }}
+          >
+
+            <h2
+              style={{
+                margin: 0,
+                color: "#203047",
+                fontSize: "18px",
+              }}
+            >
+              Design Parameters
+            </h2>
 
 
-          {/* ================= INPUT PANEL ================= */}
+            <p
+              style={{
+                color: "#647894",
+                marginBottom: 0,
+              }}
+            >
+              Enter the parameters required for column design.
+            </p>
 
-          <aside className="bg-white border border-slate-200 rounded-lg">
+          </div>
 
-            <div className="px-5 py-4 border-b border-slate-200">
 
-              <h2 className="text-sm font-semibold">
-                Design Parameters
-              </h2>
+          <div
+            style={{
+              padding: "24px",
+            }}
+          >
 
-              <p className="text-xs text-slate-500 mt-1">
-                Enter the parameters required for column design.
-              </p>
+            {/* ------------------------------------------------
+                Length
+                ------------------------------------------------ */}
+
+            <label
+              style={{
+                display: "block",
+                fontWeight: 600,
+                color: "#34455d",
+                marginBottom: "8px",
+              }}
+            >
+              Column Length
+            </label>
+
+            <div
+              style={{
+                position: "relative",
+                marginBottom: "28px",
+              }}
+            >
+
+              <input
+                type="number"
+                name="Length"
+                value={form.Length}
+                min={0.1}
+                step={0.1}
+                onChange={handleChange}
+                style={inputStyle}
+              />
+
+              <span style={unitStyle}>
+                m
+              </span>
 
             </div>
 
 
-            <div className="p-5 space-y-5">
+            {/* ------------------------------------------------
+                Axial load
+                ------------------------------------------------ */}
 
+            <label
+              style={{
+                display: "block",
+                fontWeight: 600,
+                color: "#34455d",
+                marginBottom: "8px",
+              }}
+            >
+              Factored Axial Load
+            </label>
 
-              {/* Column Length */}
+            <div
+              style={{
+                position: "relative",
+                marginBottom: "28px",
+              }}
+            >
 
-              <InputField
-                label="Column Length"
-                unit="m"
-                value={form.Length}
-                onChange={(value) =>
-                  updateField("Length", value)
+              <input
+                type="number"
+                name="Fac_Axial_Load"
+                value={
+                  form.Fac_Axial_Load
                 }
+                min={0}
+                step={10}
+                onChange={handleChange}
+                style={inputStyle}
               />
 
+              <span style={unitStyle}>
+                kN
+              </span>
 
-              {/* Axial Load */}
+            </div>
 
-              <InputField
-                label="Factored Axial Load"
-                unit="kN"
-                value={form.Fac_Axial_Load}
-                onChange={(value) =>
-                  updateField(
-                    "Fac_Axial_Load",
-                    value
-                  )
+
+            {/* ------------------------------------------------
+                Boundary condition
+                ------------------------------------------------ */}
+
+            <label
+              style={{
+                display: "block",
+                fontWeight: 600,
+                color: "#34455d",
+                marginBottom: "8px",
+              }}
+            >
+              Boundary Condition
+            </label>
+
+            <select
+              name="Boundary_Condition"
+              value={
+                form.Boundary_Condition
+              }
+              onChange={handleChange}
+              style={{
+                ...inputStyle,
+                marginBottom: "28px",
+              }}
+            >
+
+              <option value={0}>
+                Pinned - Pinned
+              </option>
+
+              <option value={1}>
+                Fixed - Fixed
+              </option>
+
+              <option value={2}>
+                Fixed - Free
+              </option>
+
+              <option value={3}>
+                Fixed - Pinned
+              </option>
+
+            </select>
+
+
+            {/* ------------------------------------------------
+                Section
+                ------------------------------------------------ */}
+
+            <label
+              style={{
+                display: "block",
+                fontWeight: 600,
+                color: "#34455d",
+                marginBottom: "8px",
+              }}
+            >
+              Section Type
+            </label>
+
+            <select
+              name="Sections"
+              value={
+                form.Sections
+              }
+              onChange={handleChange}
+              style={{
+                ...inputStyle,
+                marginBottom: "28px",
+              }}
+            >
+
+              <option value="I">
+                I Section
+              </option>
+
+              <option value="C">
+                C / Channel Section
+              </option>
+
+            </select>
+
+
+            {/* ------------------------------------------------
+                Buttons
+                ------------------------------------------------ */}
+
+            <div
+              style={{
+                display: "flex",
+                gap: "14px",
+              }}
+            >
+
+              <button
+                onClick={handleDesign}
+                disabled={
+                  loading ||
+                  meshLoading
                 }
-              />
+                style={{
+                  flex: 1,
+                  border: "none",
+                  borderRadius: "7px",
+                  background: "#ff4b0b",
+                  color: "white",
+                  fontSize: "16px",
+                  fontWeight: 700,
+                  padding: "13px",
+                  cursor:
+                    loading
+                      ? "wait"
+                      : "pointer",
+                }}
+              >
+                {loading
+                  ? "Designing..."
+                  : "Design Column"}
+              </button>
 
 
-              {/* Boundary Condition */}
+              <button
+                onClick={handleReset}
+                style={{
+                  width: "48px",
+                  border:
+                    "1px solid #ccd7e3",
+                  background: "white",
+                  borderRadius: "7px",
+                  fontSize: "20px",
+                  cursor: "pointer",
+                }}
+              >
+                ↻
+              </button>
 
-              <div>
+            </div>
 
-                <label className="text-xs font-medium text-slate-700">
-                  Boundary Condition
-                </label>
 
-                <select
-                  value={form.Boundary_Condition}
-                  onChange={(e) =>
-                    updateField(
-                      "Boundary_Condition",
-                      Number(e.target.value)
-                    )
-                  }
-                  className="mt-2 w-full h-10 px-3 rounded-md border border-slate-300 bg-white text-sm outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500"
+            {/* ------------------------------------------------
+                Error
+                ------------------------------------------------ */}
+
+            {error && (
+
+              <div
+                style={{
+                  marginTop: "22px",
+                  padding: "16px",
+                  borderRadius: "7px",
+                  border:
+                    "1px solid #ffb8b8",
+                  background: "#fff4f4",
+                  color: "#d91c1c",
+                }}
+              >
+
+                <strong>
+                  Error
+                </strong>
+
+                <div
+                  style={{
+                    marginTop: "8px",
+                    lineHeight: 1.4,
+                  }}
                 >
-
-                  <option value={0}>
-                    Fixed - Fixed
-                  </option>
-
-                  <option value={1}>
-                    Fixed - Pinned
-                  </option>
-
-                  <option value={2}>
-                    Pinned - Pinned
-                  </option>
-
-                  <option value={3}>
-                    Fixed - Free
-                  </option>
-
-                </select>
-
-              </div>
-
-
-              {/* Section */}
-
-              <div>
-
-                <label className="text-xs font-medium text-slate-700">
-                  Section Type
-                </label>
-
-                <select
-                  value={form.Sections}
-                  onChange={(e) =>
-                    updateField(
-                      "Sections",
-                      e.target.value
-                    )
-                  }
-                  className="mt-2 w-full h-10 px-3 rounded-md border border-slate-300 bg-white text-sm outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500"
-                >
-
-                  <option value="I">
-                    I Section
-                  </option>
-
-                  <option value="BOX">
-                    Box Section
-                  </option>
-
-                  <option value="CHS">
-                    Circular Hollow Section
-                  </option>
-
-                </select>
-
-              </div>
-
-
-              {/* Units */}
-
-              <div className="pt-3 border-t border-slate-200">
-
-                <div className="flex items-center gap-2 text-xs text-slate-500">
-
-                  <Ruler size={14} />
-
-                  Units: kN, m
-
+                  {error}
                 </div>
 
               </div>
 
+            )}
 
-              {/* Buttons */}
+          </div>
 
-              <div className="flex gap-2">
-
-                <button
-                  onClick={designColumn}
-                  disabled={loading}
-                  className="flex-1 h-10 rounded-md bg-orange-600 hover:bg-orange-500 disabled:bg-orange-300 text-white text-sm font-semibold flex items-center justify-center gap-2 transition"
-                >
-
-                  {loading ? (
-                    <>
-                      <Loader2
-                        size={16}
-                        className="animate-spin"
-                      />
-
-                      Designing...
-                    </>
-                  ) : (
-                    "Design Column"
-                  )}
-
-                </button>
+        </div>
 
 
-                <button
-                  onClick={resetForm}
-                  disabled={loading}
-                  className="h-10 w-10 border border-slate-300 rounded-md flex items-center justify-center text-slate-500 hover:bg-slate-50"
-                  title="Reset"
-                >
+        {/* ==================================================
+            RIGHT PANEL
+            ================================================== */}
 
-                  <RotateCcw size={16} />
+        <div
+          style={{
+            background: "white",
+            border:
+              "1px solid #dce3eb",
+            borderRadius: "10px",
+            overflow: "hidden",
+            minWidth: 0,
+          }}
+        >
 
-                </button>
+          {/* ------------------------------------------------
+              Tabs
+              ------------------------------------------------ */}
+
+          <div
+            style={{
+              display: "flex",
+              borderBottom:
+                "1px solid #e1e6ec",
+            }}
+          >
+
+            <button
+              onClick={() =>
+                setActiveTab("model")
+              }
+              style={tabStyle(
+                activeTab === "model"
+              )}
+            >
+              ◈&nbsp;&nbsp;3D Model
+            </button>
+
+
+            <button
+              onClick={() =>
+                setActiveTab("report")
+              }
+              style={tabStyle(
+                activeTab === "report"
+              )}
+            >
+              ▤&nbsp;&nbsp;Report
+            </button>
+
+          </div>
+
+
+          {/* ------------------------------------------------
+              Model
+              ------------------------------------------------ */}
+
+          {activeTab === "model" && (
+
+            <div
+              style={{
+                padding: "24px",
+              }}
+            >
+
+              <div
+                style={{
+                  position: "relative",
+                  height: "650px",
+                  background: "#f5f7f9",
+                  border:
+                    "1px solid #e1e6ec",
+                  borderRadius: "8px",
+                  overflow: "hidden",
+                }}
+              >
+
+                {geometry ? (
+
+                  <ColumnViewer
+                    geometry={
+                      geometry
+                    }
+                    loading={
+                      meshLoading
+                    }
+                  />
+
+                ) : (
+
+                  <div
+                    style={{
+                      height: "100%",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      color: "#61758e",
+                    }}
+                  >
+
+                    <div
+                      style={{
+                        fontSize: "42px",
+                        marginBottom: "14px",
+                        opacity: 0.45,
+                      }}
+                    >
+                      ◇
+                    </div>
+
+                    <strong
+                      style={{
+                        fontSize: "17px",
+                        color: "#44556c",
+                      }}
+                    >
+                      Mesh not available
+                    </strong>
+
+                    <div
+                      style={{
+                        marginTop: "7px",
+                      }}
+                    >
+                      Run the column design to generate the 3D model.
+                    </div>
+
+                  </div>
+
+                )}
 
               </div>
 
             </div>
 
-          </aside>
-
-
-          {/* ================= REPORT ================= */}
-
-          <section>
-
-            {!result && !error && (
-              <EmptyReport />
-            )}
-
-
-            {error && (
-              <ErrorReport
-                error={error}
-                form={form}
-              />
-            )}
-
-
-            {result && (
-              <SuccessReport result={result} />
-            )}
-
-          </section>
-
-        </div>
-
-      </main>
-
-    </div>
-  );
-};
-
-
-/* =========================================================
-   INPUT FIELD
-========================================================= */
-
-type InputFieldProps = {
-  label: string;
-  unit: string;
-  value: number;
-  onChange: (value: number) => void;
-};
-
-
-const InputField = ({
-  label,
-  unit,
-  value,
-  onChange,
-}: InputFieldProps) => {
-
-  return (
-    <div>
-
-      <label className="text-xs font-medium text-slate-700">
-        {label}
-      </label>
-
-      <div className="relative mt-2">
-
-        <input
-          type="number"
-          step="0.01"
-          value={value}
-          onChange={(e) =>
-            onChange(Number(e.target.value))
-          }
-          className="w-full h-10 px-3 pr-12 rounded-md border border-slate-300 text-sm outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500"
-        />
-
-        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-slate-400">
-          {unit}
-        </span>
-
-      </div>
-
-    </div>
-  );
-};
-
-
-/* =========================================================
-   EMPTY REPORT
-========================================================= */
-
-const EmptyReport = () => {
-
-  return (
-    <div className="bg-white border border-slate-200 rounded-lg min-h-[420px] flex flex-col items-center justify-center text-center">
-
-      <div className="h-14 w-14 rounded-full bg-slate-100 flex items-center justify-center text-slate-400">
-
-        <Ruler size={24} />
-
-      </div>
-
-
-      <h2 className="mt-5 text-base font-semibold text-slate-700">
-        Column Design Report
-      </h2>
-
-
-      <p className="mt-2 max-w-md text-xs leading-5 text-slate-400">
-        Enter the column parameters and run the design.
-        The analysis results returned by the design engine
-        will appear here.
-      </p>
-
-    </div>
-  );
-};
-
-
-/* =========================================================
-   ERROR REPORT
-========================================================= */
-
-type ErrorReportProps = {
-  error: string;
-  form: ColumnForm;
-};
-
-
-const ErrorReport = ({
-  error,
-  form,
-}: ErrorReportProps) => {
-
-  return (
-    <div className="bg-white border border-red-200 rounded-lg overflow-hidden">
-
-
-      {/* Header */}
-
-      <div className="px-6 py-5 bg-red-50 border-b border-red-200">
-
-        <div className="flex items-start gap-3">
-
-          <div className="h-10 w-10 rounded-full bg-red-100 text-red-600 flex items-center justify-center shrink-0">
-
-            <TriangleAlert size={20} />
-
-          </div>
-
-
-          <div>
-
-            <h2 className="text-sm font-semibold text-red-800">
-              Column Design Failed
-            </h2>
-
-            <p className="mt-1 text-xs leading-5 text-red-700">
-              {error}
-            </p>
-
-          </div>
-
-        </div>
-
-      </div>
-
-
-      {/* Parameters */}
-
-      <div className="p-6">
-
-        <h3 className="text-xs font-semibold text-slate-800">
-          Parameters Used
-        </h3>
-
-
-        <div className="grid sm:grid-cols-2 gap-3 mt-4">
-
-          <Parameter
-            label="Column Length"
-            value={`${form.Length} m`}
-          />
-
-          <Parameter
-            label="Factored Axial Load"
-            value={`${form.Fac_Axial_Load} kN`}
-          />
-
-          <Parameter
-            label="Boundary Condition"
-            value={getBoundaryName(
-              form.Boundary_Condition
-            )}
-          />
-
-          <Parameter
-            label="Section"
-            value={form.Sections}
-          />
-
-        </div>
-
-
-        {/* Suggestions */}
-
-        <div className="mt-6 p-4 rounded-md bg-orange-50 border border-orange-100">
-
-          <div className="flex items-start gap-3">
-
-            <AlertCircle
-              size={17}
-              className="text-orange-600 mt-0.5 shrink-0"
-            />
-
-            <div>
-
-              <h3 className="text-xs font-semibold text-orange-800">
-                Suggested Actions
-              </h3>
-
-              <ul className="mt-2 space-y-1.5 text-xs text-orange-700">
-
-                <li>
-                  • Try increasing the column length only if appropriate for your structural model.
-                </li>
-
-                <li>
-                  • Check whether the applied axial load is correct.
-                </li>
-
-                <li>
-                  • Verify the selected boundary condition.
-                </li>
-
-                <li>
-                  • Try another section type if the current section is inadequate.
-                </li>
-
-              </ul>
+          )}
+
+
+          {/* ------------------------------------------------
+              Report
+              ------------------------------------------------ */}
+
+          {activeTab === "report" && (
+
+            <div
+              style={{
+                padding: "28px",
+              }}
+            >
+
+              {!result ? (
+
+                <div
+                  style={{
+                    textAlign: "center",
+                    padding: "80px 20px",
+                    color: "#687b92",
+                  }}
+                >
+                  Run the column design to generate the report.
+                </div>
+
+              ) : (
+
+                <>
+
+                  <h2
+                    style={{
+                      marginTop: 0,
+                      color: "#203047",
+                    }}
+                  >
+                    Column Design Report
+                  </h2>
+
+
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns:
+                        "repeat(2, minmax(0, 1fr))",
+                      gap: "12px",
+                    }}
+                  >
+
+                    {Object.entries(
+                      result
+                    )
+                      .filter(
+                        ([key]) =>
+                          key !== "mesh_url" &&
+                          key !== "mesh_file" &&
+                          key !== "stl_url" &&
+                          key !== "stl_file"
+                      )
+                      .map(
+                        ([key, value]) => (
+
+                          <div
+                            key={key}
+                            style={{
+                              border:
+                                "1px solid #e1e6ec",
+                              borderRadius: "7px",
+                              padding: "14px",
+                            }}
+                          >
+
+                            <div
+                              style={{
+                                fontSize: "12px",
+                                color: "#71839a",
+                                marginBottom: "5px",
+                              }}
+                            >
+                              {formatKey(key)}
+                            </div>
+
+                            <div
+                              style={{
+                                fontWeight: 600,
+                                color: "#203047",
+                              }}
+                            >
+                              {formatValue(value)}
+                            </div>
+
+                          </div>
+
+                        )
+                      )}
+
+                  </div>
+
+                </>
+
+              )}
 
             </div>
 
-          </div>
+          )}
 
         </div>
 
       </div>
 
     </div>
+
   );
+
+}
+
+
+/* ============================================================
+   STYLES
+   ============================================================ */
+
+const inputStyle: React.CSSProperties = {
+  width: "100%",
+  boxSizing: "border-box",
+  height: "46px",
+  padding: "0 52px 0 14px",
+  border: "1px solid #cbd7e5",
+  borderRadius: "7px",
+  background: "white",
+  color: "#203047",
+  fontSize: "16px",
+  outline: "none",
 };
 
 
-/* =========================================================
-   SUCCESS REPORT
-========================================================= */
-
-const SuccessReport = ({
-  result,
-}: {
-  result: any;
-}) => {
-
-  return (
-    <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-
-
-      {/* Header */}
-
-      <div className="px-6 py-5 border-b border-slate-200">
-
-        <div className="flex items-start gap-3">
-
-          <div className="h-10 w-10 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center">
-
-            <CheckCircle2 size={20} />
-
-          </div>
-
-
-          <div>
-
-            <h2 className="text-sm font-semibold text-slate-900">
-              Column Design Completed
-            </h2>
-
-            <p className="mt-1 text-xs text-slate-500">
-              Design engine returned a successful response.
-            </p>
-
-          </div>
-
-        </div>
-
-      </div>
-
-
-      {/* Actual Backend Response */}
-
-      <div className="p-6">
-
-        <h3 className="text-xs font-semibold text-slate-800 mb-4">
-          Design Results
-        </h3>
-
-
-        <ReportObject
-          data={result}
-        />
-
-      </div>
-
-    </div>
-  );
+const unitStyle: React.CSSProperties = {
+  position: "absolute",
+  right: "14px",
+  top: "50%",
+  transform: "translateY(-50%)",
+  color: "#91a1b5",
+  pointerEvents: "none",
 };
 
 
-/* =========================================================
-   RECURSIVE BACKEND REPORT
-========================================================= */
-
-const ReportObject = ({
-  data,
-  level = 0,
-}: {
-  data: any;
-  level?: number;
-}) => {
-
-  if (
-    data === null ||
-    data === undefined
-  ) {
-    return (
-      <span className="text-xs text-slate-400">
-        —
-      </span>
-    );
-  }
-
-
-  if (
-    typeof data === "string" ||
-    typeof data === "number" ||
-    typeof data === "boolean"
-  ) {
-    return (
-      <span className="text-xs font-medium text-slate-800">
-        {String(data)}
-      </span>
-    );
-  }
-
-
-  if (Array.isArray(data)) {
-
-    return (
-      <div className="space-y-2">
-
-        {data.map((item, index) => (
-
-          <div
-            key={index}
-            className="p-3 bg-slate-50 rounded-md"
-          >
-
-            <ReportObject
-              data={item}
-              level={level + 1}
-            />
-
-          </div>
-
-        ))}
-
-      </div>
-    );
-  }
-
-
-  return (
-    <div
-      className={
-        level === 0
-          ? "border border-slate-200 rounded-md overflow-hidden"
-          : "space-y-2"
-      }
-    >
-
-      {Object.entries(data).map(
-        ([key, value]) => (
-
-          <div
-            key={key}
-            className="flex items-start gap-5 px-4 py-3 border-b last:border-b-0 border-slate-100"
-          >
-
-            <div className="w-1/2 text-xs text-slate-500 break-words">
-              {formatKey(key)}
-            </div>
-
-            <div className="flex-1">
-              <ReportObject
-                data={value}
-                level={level + 1}
-              />
-            </div>
-
-          </div>
-
-        )
-      )}
-
-    </div>
-  );
-};
-
-
-/* =========================================================
-   PARAMETER
-========================================================= */
-
-const Parameter = ({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) => {
-
-  return (
-    <div className="bg-slate-50 rounded-md px-3 py-3">
-
-      <p className="text-[10px] text-slate-400">
-        {label}
-      </p>
-
-      <p className="mt-1 text-xs font-semibold text-slate-700">
-        {value}
-      </p>
-
-    </div>
-  );
-};
-
-
-/* =========================================================
-   HELPERS
-========================================================= */
-
-const getBoundaryName = (
-  value: number
-) => {
-
-  switch (value) {
-
-    case 0:
-      return "Fixed - Fixed";
-
-    case 1:
-      return "Fixed - Pinned";
-
-    case 2:
-      return "Pinned - Pinned";
-
-    case 3:
-      return "Fixed - Free";
-
-    default:
-      return `Condition ${value}`;
-  }
-};
-
-
-const formatKey = (key: string) => {
-
-  return key
-    .replace(/_/g, " ")
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .replace(/\b\w/g, (char) =>
-      char.toUpperCase()
-    );
-};
-
-
-export default Column;
+const tabStyle = (
+  active: boolean
+): React.CSSProperties => ({
+  padding: "17px 28px",
+  border: "none",
+  borderBottom: active
+    ? "3px solid #ff4b0b"
+    : "3px solid transparent",
+  background: "white",
+  color: active
+    ? "#ff4b0b"
+    : "#60738c",
+  fontWeight: active
+    ? 700
+    : 500,
+  cursor: "pointer",
+  fontSize: "15px",
+});
